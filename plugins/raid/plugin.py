@@ -5,7 +5,6 @@ import dateutil.parser
 from disco.bot import Plugin
 from disco.gateway.events import MessageReactionAdd, MessageCreate
 from disco.types import Message, Channel, Guild, GuildMember
-from disco.types.message import MessageReactionEmoji
 from disco.util.snowflake import to_snowflake
 from sqlalchemy import create_engine, exists
 from sqlalchemy.orm import sessionmaker
@@ -56,7 +55,6 @@ class RaidPlugin(Plugin):
                 self.raid_channel.delete_messages(unwanted_messages)
         for raid_message in raid_messages:
             for reaction in raid_message.reactions:
-                print(reaction.emoji)
                 for reactor in raid_message.get_reactors(reaction.emoji):
                     if reactor == self.bot.client.state.me:
                         continue
