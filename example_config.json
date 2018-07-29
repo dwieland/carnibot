@@ -1,0 +1,10 @@
+{
+  "token": "BOT_TOKEN",
+  "bot": {
+    "commands_require_mention": false,
+    "commands_prefix": "!",
+    "plugins": [
+      "plugins.raid.plugin"
+    ]
+  }
+}
