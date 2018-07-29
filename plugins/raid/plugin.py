@@ -55,9 +55,9 @@ class RaidPlugin(Plugin):
                 self.raid_channel.delete_messages(unwanted_messages)
         for raid_message in raid_messages:
             for reaction in raid_message.reactions:
+                if reaction.emoji.name == "🤖":
+                    continue
                 for reactor in raid_message.get_reactors(reaction.emoji):
-                    if reactor == self.bot.client.state.me:
-                        continue
                     self._on_raid_channel_reaction(raid_message.id, reactor.id, datetime.utcnow(), reaction.emoji)
                     raid_message.delete_reaction(reaction.emoji, reactor)
         self.session.commit()
