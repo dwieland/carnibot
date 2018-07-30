@@ -8,7 +8,7 @@ from plugins.raid.db import Base
 class ReactionEnum(enum.IntEnum):
     accepted = 1
     declined = 2
-    nothing = 8
+    nothing = 3
 
 
 class RaidUserReaction(Base):

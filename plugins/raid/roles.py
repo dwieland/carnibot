@@ -17,3 +17,12 @@ class RoleEnum(enum.Enum):
             self.unknown: 4
         }
         return order[self] < order[other]
+
+
+role_to_plural = {
+    RoleEnum.tank: "Tanks",
+    RoleEnum.heal: "Healer",
+    RoleEnum.melee: "Melee DDs",
+    RoleEnum.ranged: "Ranged DDs",
+    RoleEnum.unknown: "Unknown"
+}

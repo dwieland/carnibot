@@ -12,36 +12,42 @@ from sqlalchemy.orm import sessionmaker
 from plugins.raid.classes import ClassEnum
 from plugins.raid.db import Base
 from plugins.raid.db.raid import Raid
-from plugins.raid.db.raid_user_reaction import RaidUserReaction, ReactionEnum, reaction_to_icon
+from plugins.raid.db.raid_user_reaction import RaidUserReaction, ReactionEnum
+from plugins.raid.render.renderer import Renderer
 from plugins.raid.roles import RoleEnum
 
 
 class RaidPluginConfig(Config):
-    db_connect_str = "sqlite://"
+    db_connect_str = "sqlite:///raid.db"
+    raid_channel_id = "472081810499829768"
+    locale = None
 
 
 @Plugin.with_config(RaidPluginConfig)
 class RaidPlugin(Plugin):
+
     def __init__(self, bot, config):
         super().__init__(bot, config)
-        self.session = None
-        self.raid_channel_id = to_snowflake("472081810499829768")
+
+        if self.config.locale:
+            import locale
+            locale.setlocale(locale.LC_TIME, self.config.locale)
+
+        self.renderer = Renderer()
+        self.raid_channel_id = to_snowflake(self.config.raid_channel_id)
         self.__raid_channel: Channel = None
+
+        engine = create_engine(self.config.db_connect_str)
+        Base.metadata.create_all(engine)
+        session_maker = sessionmaker()
+        session_maker.configure(bind=engine)
+        self.session = session_maker()
 
     @property
     def raid_channel(self):
         if self.__raid_channel is None:
             self.__raid_channel = self.bot.client.api.channels_get(self.raid_channel_id)
         return self.__raid_channel
-
-    def load(self, ctx):
-        super().load(ctx)
-        print(self.config.db_connect_str)
-        engine = create_engine(self.config.db_connect_str)
-        Base.metadata.create_all(engine)
-        session_maker = sessionmaker()
-        session_maker.configure(bind=engine)
-        self.session = session_maker()
 
     def unload(self, ctx):
         super().unload(ctx)
@@ -113,7 +119,7 @@ class RaidPlugin(Plugin):
         self.session.commit()
 
         raid_msg: Message = self.raid_channel.get_message(raid.message_id)
-        raid_msg.edit(self._render_raid(raid, roster))
+        raid_msg.edit(content=" ", embed=self.renderer.render_raid(raid, roster))
 
     def _accept_raid_invite(self, message_id, user_id, at):
         self._set_raid_invite_reaction(message_id, user_id, at, ReactionEnum.accepted)
@@ -163,37 +169,6 @@ class RaidPlugin(Plugin):
         sorted_list = sorted(iterable, key=key, reverse=reverse)
         return itertools.groupby(sorted_list, key)
 
-    @staticmethod
-    def _count_if(iterable, condition):
-        return sum(1 for _ in filter(condition, iterable))
-
-    def _render_raid(self, raid, roster):
-        total_accepted = self._count_if(roster.values(), lambda x: x["reaction"] == ReactionEnum.accepted)
-        total_declined = self._count_if(roster.values(), lambda x: x["reaction"] == ReactionEnum.declined)
-        total_unknown = self._count_if(roster.values(), lambda x: x["reaction"] == ReactionEnum.nothing)
-
-        text_lines = []
-        for role, role_group in self._grouped_by(roster.values(), lambda r: r["role"]):
-            role_group = list(role_group)
-            role_accepted = self._count_if(role_group, lambda r: r["reaction"] == ReactionEnum.accepted)
-            role_declined = self._count_if(role_group, lambda r: r["reaction"] == ReactionEnum.declined)
-            text_lines.append("")
-            text_lines.append("{} (+{} -{}):".format(role.value, role_accepted, role_declined))
-            for reaction, reaction_group in self._grouped_by(role_group, lambda r: r["reaction"]):
-                text_lines.append("{}  {}".format(
-                    reaction_to_icon[reaction],
-                    ", ".join(raider["name"] for raider in reaction_group)
-                ))
-
-        return """```diff
-Raid ID: {}
-   Start: {}
-+  Accepted: {}
--  Declined: {}
-   Unknown: {}
-{}
-```""".format(raid.id, raid.date.strftime("%c"), total_accepted, total_declined, total_unknown, "\n".join(text_lines))
-
     def _get_roster_by_raid_and_guild(self, raid, guild: Guild):
         roster = {}
 
@@ -226,8 +201,8 @@ Raid ID: {}
         return self.session.query(Raid).filter_by(message_id=message_id).one()
 
     def _get_all_reactions_by_raid_id(self, raid_id):
-        return self.session\
-            .query(RaidUserReaction)\
-            .filter_by(raid_id=raid_id)\
-            .order_by(RaidUserReaction.at)\
+        return self.session \
+            .query(RaidUserReaction) \
+            .filter_by(raid_id=raid_id) \
+            .order_by(RaidUserReaction.at) \
             .all()
