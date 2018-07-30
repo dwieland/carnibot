@@ -5,12 +5,7 @@ files:
   - source: carnibot
     destination: /usr/local/bin
 hooks:
-  BeforeInstall:
-    - location: scripts/create_pex_binary.sh
-      runas: root
   ApplicationStop:
     - location: scripts/stop_application.sh
-      runas: root
   ApplicationStart:
     - location: scripts/start_application.sh
-      runas: root

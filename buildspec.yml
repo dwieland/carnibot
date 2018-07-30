@@ -1,0 +1,14 @@
+
+version: 0.2
+
+phases:
+  install:
+    commands:
+      - pip install pex
+  build:
+    commands:
+      - pex -r requirements.txt -D . -o carnibot -m disco.cli
+
+artifacts:
+  files:
+    - carnibot
