@@ -8,4 +8,4 @@ class Raid(Base):
 
     id = Column(Integer, primary_key=True)
     date = Column(DateTime, unique=True)
-    message_id = Column(String)
+    message_id = Column(String(32))
