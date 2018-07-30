@@ -5,7 +5,12 @@ files:
   - source: .
     destination: /opt/carnibot
 hooks:
+  AfterInstall:
+    - location: scripts/install_pexed_binary.sh
+      runas: root
   ApplicationStop:
     - location: scripts/stop_application.sh
+      runas: root
   ApplicationStart:
     - location: scripts/start_application.sh
+      runas: root
