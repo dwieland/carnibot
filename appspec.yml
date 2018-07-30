@@ -2,11 +2,11 @@
 version: 0.0
 os: linux
 files:
-  - source: .
-    destination: /opt/carnibot
+  - source: carnibot
+    destination: /usr/local/bin
 hooks:
-  AfterInstall:
-    - location: scripts/install_pexed_binary.sh
+  BeforeInstall:
+    - location: scripts/create_pex_binary.sh
       runas: root
   ApplicationStop:
     - location: scripts/stop_application.sh
