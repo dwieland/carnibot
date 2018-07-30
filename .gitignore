@@ -1,5 +1,6 @@
 .idea
 venv*
 *.db
+config
 config.json
 **/__pycache__

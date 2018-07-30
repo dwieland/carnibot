@@ -192,7 +192,7 @@ Raid ID: {}
 -  Declined: {}
    Unknown: {}
 {}
-```""".format(raid.id, raid.date, total_accepted, total_declined, total_unknown, "\n".join(text_lines))
+```""".format(raid.id, raid.date.format("%c"), total_accepted, total_declined, total_unknown, "\n".join(text_lines))
 
     def _get_roster_by_raid_and_guild(self, raid, guild: Guild):
         roster = {}
