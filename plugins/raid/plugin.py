@@ -2,7 +2,7 @@ import itertools
 from datetime import datetime
 
 import dateutil.parser
-from disco.bot import Plugin
+from disco.bot import Plugin, Config
 from disco.gateway.events import MessageReactionAdd, MessageCreate
 from disco.types import Message, Channel, Guild, GuildMember
 from disco.util.snowflake import to_snowflake
@@ -16,6 +16,11 @@ from plugins.raid.db.raid_user_reaction import RaidUserReaction, ReactionEnum, r
 from plugins.raid.roles import RoleEnum
 
 
+class RaidPluginConfig(Config):
+    db_connect_str = "sqlite://"
+
+
+@Plugin.with_config(RaidPluginConfig)
 class RaidPlugin(Plugin):
     def __init__(self, bot, config):
         super().__init__(bot, config)
@@ -31,7 +36,8 @@ class RaidPlugin(Plugin):
 
     def load(self, ctx):
         super().load(ctx)
-        engine = create_engine("sqlite:///raid.db")
+        print(self.config.db_connect_str)
+        engine = create_engine(self.config.db_connect_str)
         Base.metadata.create_all(engine)
         session_maker = sessionmaker()
         session_maker.configure(bind=engine)
