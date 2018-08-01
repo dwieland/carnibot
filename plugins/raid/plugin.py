@@ -1,10 +1,11 @@
+import functools
 import itertools
 from datetime import datetime
 
 import dateutil.parser
 from disco.bot import Plugin, Config
 from disco.gateway.events import MessageReactionAdd, MessageCreate
-from disco.types import Message, Channel, Guild, GuildMember
+from disco.types import Guild, GuildMember
 from disco.util.snowflake import to_snowflake
 from sqlalchemy import create_engine, exists
 from sqlalchemy.orm import sessionmaker
@@ -35,10 +36,9 @@ class RaidPlugin(Plugin):
 
         self.renderer = Renderer()
         self.raid_channel_id = to_snowflake(self.config.raid_channel_id)
-        self.__raid_channel: Channel = None
+        self.__raid_channel = None
 
         engine = create_engine(self.config.db_connect_str)
-        Base.metadata.create_all(engine)
         session_maker = sessionmaker()
         session_maker.configure(bind=engine)
         self.session = session_maker()
@@ -49,11 +49,14 @@ class RaidPlugin(Plugin):
             self.__raid_channel = self.bot.client.api.channels_get(self.raid_channel_id)
         return self.__raid_channel
 
+    @Plugin.listen("Ready")
+    def on_ready(self, _):
+        self.register_schedule(self.on_cleanup, interval=60, repeat=True, init=True)
+
     def unload(self, ctx):
         super().unload(ctx)
         self.session.commit()
 
-    @Plugin.schedule(interval=5, init=False, repeat=False)
     def on_cleanup(self):
         raid_messages = []
         for batch in self.raid_channel.messages_iter(bulk=True):
@@ -79,9 +82,15 @@ class RaidPlugin(Plugin):
     def on_create_command(self, _, args):
         self._create_raid(args.at)
 
+    @Plugin.command("delete", parser=True)
+    @Plugin.parser.add_argument("id", type=int)
+    def on_delete_command(self, _, args):
+        self.session.query(Raid).filter_by(id=args.id).delete()
+        self.session.commit()
+
     @Plugin.listen("MessageCreate")
     def on_message_create(self, event: MessageCreate):
-        msg: Message = event.message
+        msg = event.message
         if msg.channel_id == self.raid_channel_id:
             if msg.author != self.bot.client.state.me:
                 msg.delete()
@@ -94,10 +103,20 @@ class RaidPlugin(Plugin):
                 event.delete()
 
     def _on_raid_channel_reaction(self, message_id, user_id, at, emoji):
-        if emoji.name == "👍":
-            self._accept_raid_invite(message_id, user_id, at)
-        elif emoji.name == "👎":
-            self._decline_raid_invite(message_id, user_id, at)
+        emoji_to_method = {
+            "\N{thumbs up sign}": self._accept_raid_invite,
+            "\N{thumbs down sign}": self._decline_raid_invite,
+            "\N{clock face twelve-thirty}": functools.partial(self._accept_raid_invite_delayed, delay="+30m"),
+            "\N{clock face one oclock}": functools.partial(self._accept_raid_invite_delayed, delay="+1h"),
+            "\N{clock face one-thirty}": functools.partial(self._accept_raid_invite_delayed, delay="+1h30m"),
+            "\N{clock face two oclock}": functools.partial(self._accept_raid_invite_delayed, delay="+2h"),
+            "\N{clock face two-thirty}": functools.partial(self._accept_raid_invite_delayed, delay="+2h30m"),
+            "\N{clock face three oclock}": functools.partial(self._accept_raid_invite_delayed, delay="+3h"),
+            "\N{clock face three-thirty}": functools.partial(self._accept_raid_invite_delayed, delay="+3h30m"),
+            "\N{clock face four oclock}": functools.partial(self._accept_raid_invite_delayed, delay="+4h"),
+        }
+        if emoji.name in emoji_to_method:
+            emoji_to_method[emoji.name](message_id=message_id, user_id=user_id, at=at)
         self._update_raid_message(message_id)
 
     def _create_raid(self, at):
@@ -108,7 +127,7 @@ class RaidPlugin(Plugin):
         self._update_raid_message(raid.message_id)
 
     def _create_placeholder_message(self):
-        channel: Channel = self.bot.client.state.channels[self.raid_channel_id]
+        channel = self.bot.client.state.channels[self.raid_channel_id]
         msg = channel.send_message("Placeholder. Raid will appear shortly.")
         msg.add_reaction("🤖")
         return msg
@@ -118,11 +137,15 @@ class RaidPlugin(Plugin):
         roster = self._get_roster_by_raid_and_guild(raid, self.raid_channel.guild)
         self.session.commit()
 
-        raid_msg: Message = self.raid_channel.get_message(raid.message_id)
+        raid_msg = self.raid_channel.get_message(raid.message_id)
         raid_msg.edit(content=" ", embed=self.renderer.render_raid(raid, roster))
 
     def _accept_raid_invite(self, message_id, user_id, at):
         self._set_raid_invite_reaction(message_id, user_id, at, ReactionEnum.accepted)
+        self.session.commit()
+
+    def _accept_raid_invite_delayed(self, message_id, user_id, at, delay):
+        self._set_raid_invite_reaction(message_id, user_id, at, ReactionEnum.delayed, delay)
         self.session.commit()
 
     def _decline_raid_invite(self, message_id, user_id, at):
@@ -135,14 +158,14 @@ class RaidPlugin(Plugin):
             raid_id=raid.id,
             user_id=user_id,
             at=at,
-            reaction=reaction,
+            reaction=reaction.value,
             reason=reason
         )
         self.session.add(reaction)
 
     @staticmethod
     def _is_raider(member: GuildMember):
-        guild: Guild = member.guild
+        guild = member.guild
         for role_id in member.roles:
             if guild.roles[role_id].name in ("Mainraider", "Testraider"):
                 return True
@@ -192,8 +215,9 @@ class RaidPlugin(Plugin):
                 "class": self._get_class(member),
                 "role": self._get_role(member)
             })
-            raider["reaction"] = reaction.reaction
+            raider["reaction"] = ReactionEnum(reaction.reaction)
             raider["reaction_time"] = str(reaction.at)
+            raider["reason"] = reaction.reason
 
         return roster
 

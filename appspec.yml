@@ -4,7 +4,11 @@ os: linux
 files:
   - source: carnibot
     destination: /usr/local/bin
+  - source: .
+    destination: /opt/carnibot
 hooks:
+  AfterInstall:
+    - location: scripts/migrate_database.sh
   ApplicationStop:
     - location: scripts/stop_application.sh
   ApplicationStart:

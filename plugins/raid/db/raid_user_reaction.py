@@ -5,10 +5,20 @@ from sqlalchemy import Integer, Column, String, Enum, DateTime
 from plugins.raid.db import Base
 
 
-class ReactionEnum(enum.IntEnum):
-    accepted = 1
-    declined = 2
-    nothing = 3
+class ReactionEnum(enum.Enum):
+    accepted = "Accepted"
+    delayed = "Delayed"
+    declined = "Declined"
+    nothing = "Unknown"
+
+    def __lt__(self, other):
+        order = {
+            ReactionEnum.accepted: 1,
+            ReactionEnum.delayed: 2,
+            ReactionEnum.declined: 3,
+            ReactionEnum.nothing: 4
+        }
+        return order[self] < order[other]
 
 
 class RaidUserReaction(Base):
@@ -17,12 +27,13 @@ class RaidUserReaction(Base):
     raid_id = Column(Integer, primary_key=True)
     user_id = Column(String(32), primary_key=True)
     at = Column(DateTime, primary_key=True)
-    reaction = Column(Enum(ReactionEnum))
+    reaction = Column(String(32))
     reason = Column(String(1000))
 
 
 reaction_to_icon = {
-    ReactionEnum.nothing: " ",
     ReactionEnum.accepted: "+",
-    ReactionEnum.declined: "-"
+    ReactionEnum.delayed: "!",
+    ReactionEnum.declined: "-",
+    ReactionEnum.nothing: " "
 }

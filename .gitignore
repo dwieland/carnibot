@@ -4,3 +4,4 @@ venv*
 config
 config.json
 **/__pycache__
+alembic.ini

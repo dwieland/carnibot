@@ -11,6 +11,4 @@ phases:
 
 artifacts:
   files:
-    - carnibot
-    - appspec.yml
-    - scripts/*
+    - *

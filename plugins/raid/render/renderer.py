@@ -10,38 +10,53 @@ from plugins.raid.roles import role_to_plural, RoleEnum
 class Renderer:
 
     def render_attendance(self, roster):
-        total_accepted = self._count_if(roster.values(), lambda x: x["reaction"] == ReactionEnum.accepted)
-        total_declined = self._count_if(roster.values(), lambda x: x["reaction"] == ReactionEnum.declined)
-        total_unknown = self._count_if(roster.values(), lambda x: x["reaction"] == ReactionEnum.nothing)
+        totals = [
+            (reaction, self._count_if(roster.values(), lambda x: x["reaction"] == reaction))
+                for reaction in ReactionEnum
+        ]
 
         return MessageEmbedField(
             name="Attendance",
-            value=Diff("+ Accepted: {}\n- Declined: {}\n  Unknown: {}".format(
-                total_accepted,
-                total_declined,
-                total_unknown
-            )),
+            value=Diff("\n".join("{} {}: {}".format(
+                reaction_to_icon[reaction],
+                reaction.value,
+                total
+            ) for (reaction, total) in totals)),
             inline=True
         )
 
     @staticmethod
     def render_buffs(roster):
-        buffs = {buff: "-" for buff in BuffEnum}
+        buffs = {buff: ReactionEnum.declined for buff in BuffEnum}
         for raider in roster.values():
-            if raider["reaction"] == ReactionEnum.accepted and raider["class"] in class_buffs:
-                buffs[class_buffs[raider["class"]]] = "+"
+            if raider["class"] in class_buffs:
+                cur_reaction = buffs[class_buffs[raider["class"]]]
+                buffs[class_buffs[raider["class"]]] = min(cur_reaction, raider["reaction"])
 
         return MessageEmbedField(
             name="Raid Buffs",
             value=Diff("\n".join(
-                "{} {}".format(got_it, buff.value)
-                for buff, got_it in sorted(buffs.items(), key=lambda i: (i[1], i[0].value))
+                "{} {}".format(reaction_to_icon[reaction], buff.value)
+                for buff, reaction in sorted(buffs.items(), key=lambda i: (i[1], i[0].value))
             )),
             inline=True
         )
 
     @staticmethod
-    def render_role(roster, role):
+    def render_raider(raider):
+        if raider["reaction"] == ReactionEnum.delayed and raider.get("reason"):
+            return "{} {} ({})".format(
+                reaction_to_icon[raider["reaction"]],
+                raider["name"],
+                raider["reason"]
+            )
+        else:
+            return "{} {}".format(
+                reaction_to_icon[raider["reaction"]],
+                raider["name"]
+            )
+
+    def render_role(self, roster, role):
         role_roster = list(filter(lambda x: x["role"] == role, roster.values()))
         if len(role_roster) == 0:
             return
@@ -50,29 +65,33 @@ class Renderer:
 
         return MessageEmbedField(
             name=Bold(role_to_plural[role]),
-            value=Diff("\n".join("{} {}".format(reaction_to_icon[x["reaction"]], x["name"]) for x in role_roster)),
+            value=Diff("\n".join(self.render_raider(raider) for raider in role_roster)),
             inline=True
         )
 
     def render_raid(self, raid, roster):
+        pic_url_template = "https://s3.eu-central-1.amazonaws.com/weekday-thumbnails/icons8-{}-{}.png"
+        pic_width = 100
         weekday_to_url = {
-            0: "https://s3.eu-central-1.amazonaws.com/weekday-thumbnails/icons8-montag-50.png",
-            1: "https://s3.eu-central-1.amazonaws.com/weekday-thumbnails/icons8-dienstag-50.png",
-            2: "https://s3.eu-central-1.amazonaws.com/weekday-thumbnails/icons8-mittwoch-50.png",
-            3: "https://s3.eu-central-1.amazonaws.com/weekday-thumbnails/icons8-donnerstag-50.png",
-            4: "https://s3.eu-central-1.amazonaws.com/weekday-thumbnails/icons8-freitag-50.png",
-            5: "https://s3.eu-central-1.amazonaws.com/weekday-thumbnails/icons8-samstag-50.png",
-            6: "https://s3.eu-central-1.amazonaws.com/weekday-thumbnails/icons8-sonntag-50.png",
+            0: pic_url_template.format("montag", pic_width),
+            1: pic_url_template.format("dienstag", pic_width),
+            2: pic_url_template.format("mittwoch", pic_width),
+            3: pic_url_template.format("donnerstag", pic_width),
+            4: pic_url_template.format("freitag", pic_width),
+            5: pic_url_template.format("samstag", pic_width),
+            6: pic_url_template.format("sonntag", pic_width),
         }
         embed = MessageEmbed(
             title=raid.date.strftime("%A %H:%M - %x"),
+            description="Raid ID: {}".format(raid.id),
             thumbnail={
                 "url": weekday_to_url[raid.date.weekday()]
             }
         )
         embed.fields.append(self.render_attendance(roster))
         embed.fields.append(self.render_buffs(roster))
-        embed.fields.extend([self.render_role(roster, role) for role in RoleEnum])
+        for role in RoleEnum:
+            embed.fields.append(self.render_role(roster, role))
         for _ in range(embed.fields.count(None)):
             embed.fields.remove(None)
         return embed
