@@ -1,5 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
-pushd /opt/carnibot
+cd /opt/carnibot
 alembic -c /etc/carnibot/alembic.ini upgrade head
-popd
