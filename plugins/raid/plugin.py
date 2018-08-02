@@ -1,8 +1,11 @@
 import functools
 import itertools
-from datetime import datetime
+from contextlib import contextmanager
+from datetime import datetime, date, timedelta
 
 import dateutil.parser
+import dateutil.tz
+import dateutil.utils
 from disco.bot import Plugin, Config
 from disco.gateway.events import MessageReactionAdd, MessageCreate
 from disco.types import Guild, GuildMember
@@ -11,7 +14,6 @@ from sqlalchemy import create_engine, exists
 from sqlalchemy.orm import sessionmaker
 
 from plugins.raid.classes import ClassEnum
-from plugins.raid.db import Base
 from plugins.raid.db.raid import Raid
 from plugins.raid.db.raid_user_reaction import RaidUserReaction, ReactionEnum
 from plugins.raid.render.renderer import Renderer
@@ -20,8 +22,10 @@ from plugins.raid.roles import RoleEnum
 
 class RaidPluginConfig(Config):
     db_connect_str = "sqlite:///raid.db"
+    bot_channel_id = "472469888158531585"
     raid_channel_id = "472081810499829768"
     locale = None
+    timezone = "Europe/Berlin"
 
 
 @Plugin.with_config(RaidPluginConfig)
@@ -34,14 +38,24 @@ class RaidPlugin(Plugin):
             import locale
             locale.setlocale(locale.LC_TIME, self.config.locale)
 
-        self.renderer = Renderer()
+        self.timezone = dateutil.tz.gettz(self.config.timezone)
+
+        self.renderer = Renderer(self.timezone)
+        self.bot_channel_id = to_snowflake(self.config.bot_channel_id)
         self.raid_channel_id = to_snowflake(self.config.raid_channel_id)
+        self.__bot_channel = None
         self.__raid_channel = None
 
         engine = create_engine(self.config.db_connect_str)
         session_maker = sessionmaker()
         session_maker.configure(bind=engine)
         self.session = session_maker()
+
+    @property
+    def bot_channel(self):
+        if self.__bot_channel is None:
+            self.__bot_channel = self.bot.client.api.channels_get(self.bot_channel_id)
+        return self.__bot_channel
 
     @property
     def raid_channel(self):
@@ -51,42 +65,32 @@ class RaidPlugin(Plugin):
 
     @Plugin.listen("Ready")
     def on_ready(self, _):
-        self.register_schedule(self.on_cleanup, interval=60, repeat=True, init=True)
+        self.register_schedule(self.cleanup, interval=60, repeat=True, init=True)
+        self.register_schedule(self.remove_passed_raids, interval=60, repeat=True, init=True)
 
     def unload(self, ctx):
         super().unload(ctx)
         self.session.commit()
 
-    def on_cleanup(self):
-        raid_messages = []
-        for batch in self.raid_channel.messages_iter(bulk=True):
-            unwanted_messages = []
-            for message in batch:
-                if not self.session.query(exists().where(Raid.message_id == message.id)).scalar():
-                    unwanted_messages.append(message)
-                else:
-                    raid_messages.append(message)
-            if len(unwanted_messages) > 0:
-                self.raid_channel.delete_messages(unwanted_messages)
-        for raid_message in raid_messages:
-            for reaction in raid_message.reactions:
-                if reaction.emoji.name == "🤖":
-                    continue
-                for reactor in raid_message.get_reactors(reaction.emoji):
-                    self._on_raid_channel_reaction(raid_message.id, reactor.id, datetime.utcnow(), reaction.emoji)
-                    raid_message.delete_reaction(reaction.emoji, reactor)
-        self.session.commit()
-
     @Plugin.command("create", parser=True)
-    @Plugin.parser.add_argument("at", type=dateutil.parser.parse)
+    @Plugin.parser.add_argument("at", type=str)
     def on_create_command(self, _, args):
-        self._create_raid(args.at)
+        def get_tz(tzname, tzoffset):
+            if tzname:
+                return dateutil.tz.gettz(tzname)
+            else:
+                return tzoffset
+
+        at = dateutil.parser.parse(args.at, tzinfos=get_tz)
+        at = dateutil.utils.default_tzinfo(at, self.timezone)
+        at = at.astimezone(dateutil.tz.UTC)
+        at = at.replace(tzinfo=None)
+        self._create_raid(at)
 
     @Plugin.command("delete", parser=True)
     @Plugin.parser.add_argument("id", type=int)
     def on_delete_command(self, _, args):
-        self.session.query(Raid).filter_by(id=args.id).delete()
-        self.session.commit()
+        self._delete_raid(args.id)
 
     @Plugin.listen("MessageCreate")
     def on_message_create(self, event: MessageCreate):
@@ -102,66 +106,137 @@ class RaidPlugin(Plugin):
                 self._on_raid_channel_reaction(event.message_id, event.user_id, datetime.utcnow(), event.emoji)
                 event.delete()
 
+    @staticmethod
+    @contextmanager
+    def _transaction(session):
+        try:
+            yield
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            raise e
+
+    def cleanup(self):
+        with self._transaction(self.session):
+            raid_messages = []
+            for batch in self.raid_channel.messages_iter(bulk=True):
+                unwanted_messages = []
+                for message in batch:
+                    if not self.session.query(exists().where(Raid.message_id == message.id)).scalar():
+                        unwanted_messages.append(message)
+                    else:
+                        raid_messages.append(message)
+                if len(unwanted_messages) > 0:
+                    self.raid_channel.delete_messages(unwanted_messages)
+            for raid_message in raid_messages:
+                for reaction in raid_message.reactions:
+                    if reaction.emoji.name == "🤖":
+                        continue
+                    for reactor in raid_message.get_reactors(reaction.emoji):
+                        self._on_raid_channel_reaction(raid_message.id, reactor.id, datetime.utcnow(), reaction.emoji)
+                        raid_message.delete_reaction(reaction.emoji, reactor)
+
+    def remove_passed_raids(self):
+        with self._transaction(self.session):
+            raids_to_remove = self.session \
+                .query(Raid) \
+                .filter(
+                Raid.date < datetime.utcnow() - timedelta(hours=8),
+                Raid.message_id != None
+            ) \
+                .all()
+            self.raid_channel.delete_messages([raid.message_id for raid in raids_to_remove])
+            for raid in raids_to_remove:
+                self.bot_channel.send_message("Raid removed from calendar: {}".format(raid.date))
+                raid.message_id = None
+
     def _on_raid_channel_reaction(self, message_id, user_id, at, emoji):
         emoji_to_method = {
-            "\N{thumbs up sign}": self._accept_raid_invite,
-            "\N{thumbs down sign}": self._decline_raid_invite,
-            "\N{clock face twelve-thirty}": functools.partial(self._accept_raid_invite_delayed, delay="+30m"),
-            "\N{clock face one oclock}": functools.partial(self._accept_raid_invite_delayed, delay="+1h"),
-            "\N{clock face one-thirty}": functools.partial(self._accept_raid_invite_delayed, delay="+1h30m"),
-            "\N{clock face two oclock}": functools.partial(self._accept_raid_invite_delayed, delay="+2h"),
-            "\N{clock face two-thirty}": functools.partial(self._accept_raid_invite_delayed, delay="+2h30m"),
-            "\N{clock face three oclock}": functools.partial(self._accept_raid_invite_delayed, delay="+3h"),
-            "\N{clock face three-thirty}": functools.partial(self._accept_raid_invite_delayed, delay="+3h30m"),
-            "\N{clock face four oclock}": functools.partial(self._accept_raid_invite_delayed, delay="+4h"),
+            "👍": functools.partial(self._set_raid_invite_reaction, reaction=ReactionEnum.accepted),
+            "👎": functools.partial(self._set_raid_invite_reaction, reaction=ReactionEnum.declined),
+            "🕧": functools.partial(self._set_raid_invite_reaction, reaction=ReactionEnum.delayed, reason="+30m"),
+            "🕐": functools.partial(self._set_raid_invite_reaction, reaction=ReactionEnum.delayed, reason="+1h"),
+            "🕜": functools.partial(self._set_raid_invite_reaction, reaction=ReactionEnum.delayed, reason="+1h30m"),
+            "🕑": functools.partial(self._set_raid_invite_reaction, reaction=ReactionEnum.delayed, reason="+2h"),
+            "🕝": functools.partial(self._set_raid_invite_reaction, reaction=ReactionEnum.delayed, reason="+2h30m"),
+            "🕒": functools.partial(self._set_raid_invite_reaction, reaction=ReactionEnum.delayed, reason="+3h"),
+            "🕞": functools.partial(self._set_raid_invite_reaction, reaction=ReactionEnum.delayed, reason="+3h30m"),
+            "🕓": functools.partial(self._set_raid_invite_reaction, reaction=ReactionEnum.delayed, reason="+4h"),
         }
-        if emoji.name in emoji_to_method:
-            emoji_to_method[emoji.name](message_id=message_id, user_id=user_id, at=at)
-        self._update_raid_message(message_id)
+
+        with self._transaction(self.session):
+            raid = self._expect_raid_by_message_id(message_id)
+
+            if emoji.name in emoji_to_method:
+                emoji_to_method[emoji.name](raid=raid, user_id=user_id, at=at)
+                self._update_calendar_message(raid)
 
     def _create_raid(self, at):
-        raid_msg = self._create_placeholder_message()
-        raid = Raid(date=at, message_id=raid_msg.id)
-        self.session.add(raid)
-        self.session.commit()
-        self._update_raid_message(raid.message_id)
+        with self._transaction(self.session):
+            if at < datetime.utcnow():
+                self.bot_channel.send_message("Can't create raids in the past.")
+                return
 
-    def _create_placeholder_message(self):
-        channel = self.bot.client.state.channels[self.raid_channel_id]
-        msg = channel.send_message("Placeholder. Raid will appear shortly.")
-        msg.add_reaction("🤖")
-        return msg
+            if self.session.query(Raid).filter_by(date=at).count() > 0:
+                self.bot_channel.send_message("Raid already exists.")
+                return
 
-    def _update_raid_message(self, raid_message_id):
-        raid = self._expect_raid_by_message_id(raid_message_id)
+            raid = Raid(date=at)
+            self.session.add(raid)
+            self._add_raid_to_calendar(raid)
+            self.bot_channel.send_message("Raid created: {}.".format(at))
+
+    def _delete_raid(self, raid_id):
+        with self.transaction(self.session):
+            raid = self.session.query(Raid).filter_by(id=raid_id).one_or_none()
+            if raid:
+                self._delete_calendar_message(raid)
+                self.session.delete(raid)
+                self.bot_channel.send_message("Raid deleted: {}.".format(raid.date))
+            else:
+                self.bot_channel.send_message("Raid not found.")
+
+    def _add_raid_to_calendar(self, raid):
+        if raid.date.date() > date.today() + timedelta(days=14):
+            return
+
+        raid.message_id = self._create_calendar_message(raid).id
+        self._reorder_calendar(raid.date)
+
+    def _reorder_calendar(self, after):
+        raids_to_reorder = self.session \
+            .query(Raid) \
+            .filter(Raid.date > after, Raid.message_id != None) \
+            .order_by(Raid.date) \
+            .all()
+
+        if raids_to_reorder:
+            self.raid_channel.delete_messages([r.message_id for r in raids_to_reorder])
+
+            for raid in raids_to_reorder:
+                raid.message_id = self._create_calendar_message(raid).id
+
+    def _create_calendar_message(self, raid):
         roster = self._get_roster_by_raid_and_guild(raid, self.raid_channel.guild)
-        self.session.commit()
+        return self.raid_channel.send_message(embed=self.renderer.render_raid(raid, roster))
 
+    def _update_calendar_message(self, raid):
+        roster = self._get_roster_by_raid_and_guild(raid, self.raid_channel.guild)
         raid_msg = self.raid_channel.get_message(raid.message_id)
         raid_msg.edit(content=" ", embed=self.renderer.render_raid(raid, roster))
 
-    def _accept_raid_invite(self, message_id, user_id, at):
-        self._set_raid_invite_reaction(message_id, user_id, at, ReactionEnum.accepted)
-        self.session.commit()
+    def _delete_calendar_message(self, raid):
+        self.raid_channel.get_message(raid.message_id).delete()
 
-    def _accept_raid_invite_delayed(self, message_id, user_id, at, delay):
-        self._set_raid_invite_reaction(message_id, user_id, at, ReactionEnum.delayed, delay)
-        self.session.commit()
-
-    def _decline_raid_invite(self, message_id, user_id, at):
-        self._set_raid_invite_reaction(message_id, user_id, at, ReactionEnum.declined)
-        self.session.commit()
-
-    def _set_raid_invite_reaction(self, message_id, user_id, at, reaction, reason=None):
-        raid = self._expect_raid_by_message_id(message_id)
-        reaction = RaidUserReaction(
+    def _set_raid_invite_reaction(self, raid, user_id, at, reaction, reason=None):
+        user_reaction = RaidUserReaction(
             raid_id=raid.id,
             user_id=user_id,
             at=at,
             reaction=reaction.value,
             reason=reason
         )
-        self.session.add(reaction)
+        self.session.add(user_reaction)
 
     @staticmethod
     def _is_raider(member: GuildMember):
@@ -208,7 +283,6 @@ class RaidPlugin(Plugin):
         for reaction in reactions:
             member = guild.members.get(to_snowflake(reaction.user_id))
             if member is None:
-                print("Reaction from non-member user found: {}".format(reaction.user_id))
                 continue
             raider = roster.setdefault(member.id, {
                 "name": member.name,

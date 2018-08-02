@@ -1,3 +1,5 @@
+import dateutil.utils
+from dateutil import tz
 from disco.types.message import MessageEmbedField, MessageEmbed
 
 from plugins.raid.buffs import class_buffs, BuffEnum
@@ -8,6 +10,9 @@ from plugins.raid.roles import role_to_plural, RoleEnum
 
 
 class Renderer:
+
+    def __init__(self, timezone):
+        self.timezone = timezone
 
     def render_attendance(self, roster):
         totals = [
@@ -81,8 +86,9 @@ class Renderer:
             5: pic_url_template.format("samstag", pic_width),
             6: pic_url_template.format("sonntag", pic_width),
         }
+        at = dateutil.utils.default_tzinfo(raid.date, tz.UTC)
         embed = MessageEmbed(
-            title=raid.date.strftime("%A %H:%M - %x"),
+            title=at.astimezone(self.timezone).strftime("%A %H:%M - %x"),
             description="Raid ID: {}".format(raid.id),
             thumbnail={
                 "url": weekday_to_url[raid.date.weekday()]
