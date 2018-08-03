@@ -1,4 +1,5 @@
 alembic >= 1.0.0
+colour >= 0.1.5
 disco-py >= 0.0.12
 gevent == 1.2.2
 python-dateutil >= 2.7.3

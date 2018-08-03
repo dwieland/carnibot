@@ -89,6 +89,7 @@ class Renderer:
         at = dateutil.utils.default_tzinfo(raid.date, tz.UTC)
         embed = MessageEmbed(
             title=at.astimezone(self.timezone).strftime("%A %H:%M - %x"),
+            color=raid.color,
             description="Raid ID: {}".format(raid.id),
             thumbnail={
                 "url": weekday_to_url[raid.date.weekday()]
